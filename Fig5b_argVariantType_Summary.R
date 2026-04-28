@@ -1,0 +1,196 @@
+######### Required Libraries
+library(data.table)
+library(reshape2)
+library(ggplot2)
+library(dplyr)
+
+########## Read Mutation file and the metadata
+mutation <- fread("/Users/samhita/Desktop/IGIB/TAM/finalTAMs_March.txt",
+                  header = TRUE, stringsAsFactors = FALSE)
+metadata <- fread("/Users/samhita/Desktop/IGIB/TAM/metadata_mutation.txt",
+                  header = TRUE, stringsAsFactors = FALSE)
+metadata <- metadata[,sample_id := gsub("_S\\d{1,2}","",sample_id)]
+
+########## Convert to long form and make the necessary modifications to merge with metadata
+mutation1 <- melt.data.table(mutation,
+                             id.vars = c("CHROM","GENE","POS","REF","ALT","EFFECT","IMPACT","VARIANT_TYPE","DNA_CHANGE","PROTEIN_CHANGE",
+                                         "QUAL","DEPTH","Microbe sample count","Mutation Sample count"))
+mutation1 <- mutation1[value != "" & !is.na(value)]
+mutation1 <- unique(mutation1)
+mutation1 <- mutation1[,variable := gsub("_S\\d{1,2}","",variable)][,c("Sample","Category") := tstrsplit(variable,"\\.")]
+mutation1 <- merge(mutation1,metadata,
+                   by.x = "Sample",by.y = "sample_id",
+                   all.x= TRUE,all.y = FALSE)
+mutation1 <- mutation1[,Category := ifelse(Category == "x","mutation","microbe")]
+
+########## Extract only the microbial data along with the mutations within each ARG
+mutation_microbe <- mutation1[Category == "microbe"]
+mutation_microbe <- mutation_microbe[, .(value = trimws(unlist(strsplit(value, ",")))),
+                                     by = setdiff(names(mutation_microbe), "value")]
+
+mutation_microbe <- unique(mutation_microbe[,.(GENE,VARIANT_TYPE,severity,value)])
+
+mutation_microbe$value <- factor(mutation_microbe$value)
+level <- as.character(rev(levels(mutation_microbe$value)))
+mutation_microbe$value <- factor(mutation_microbe$value, levels = level)
+mutation_microbe <- unique(mutation_microbe[,.(GENE,VARIANT_TYPE,severity,value)]) 
+mutation_microbe <- mutation_microbe[,xInteraction := interaction(VARIANT_TYPE,GENE)]
+
+########## Create data with all variant type and ARG combinations suitable for plotting
+all_combos <- CJ(severity = unique(mutation_microbe$severity),
+                xInteraction = unique(mutation_microbe$xInteraction),
+                value = unique(mutation_microbe$value),
+                unique = TRUE)
+
+########## Combine it with the actual variant data and make the plot object
+variantsData_plotData1 <- merge(all_combos, mutation_microbe, all = TRUE)
+
+########## Remove the combinations with no data
+variantsData_plotData1 <- variantsData_plotData1[,manualRemoval := paste0(xInteraction,"_",severity)]
+
+variantsData_plotData1 <- variantsData_plotData1[,VARIANT_TYPE1 := ifelse(is.na(VARIANT_TYPE),"NA",VARIANT_TYPE)][!manualRemoval %in% c("missense.TEM-1_Negative",
+                                                                                                                                        "nonsense.TEM-1_Negative",
+                                                                                                                                        "synonymous.TEM-1_Negative",
+                                                                                                                                        "synonymous.TEM-116_Negative",
+                                                                                                                                        "missense.TEM-116_Negative",
+                                                                                                                                        "synonymous.tet(C)_Negative",
+                                                                                                                                        "missense.Rv1877_Non-Severe",
+                                                                                                                                        "missense.TEM-116_Non-Severe",
+                                                                                                                                        "synonymous.TEM-116_Non-Severe",
+                                                                                                                                        "missense.Rv1877_Severe",
+                                                                                                                                        "synonymous.TEM-1_Severe",
+                                                                                                                                      "synonymous.tet(C)_Severe")]
+
+########## Exclice non abundant microbes
+variantsData_plotData1 <- variantsData_plotData1[!value %in% c("Aeromonas veronii","Ancylobacter polymorphus",
+                                                               "Pannonibacter phragmitetus","Xanthobacter dioxanivorans")][,value := factor(value,
+                                                                 levels = rev(c("Escherichia coli",
+                                                                            "Klebsiella pneumoniae",
+                                                                            "Acinetobacter baumannii",
+                                                                            "Bacillus subtilis",
+                                                                            "Staphylococcus haemolyticus",
+                                                                            "Salmonella enterica",
+                                                                            "Pseudomonas aeruginosa",
+                                                                            "Mycobacterium tuberculosis")))]
+
+########## Plot
+variantsData_plotData1 %>%
+  ggplot(aes(y = value,
+             x = xInteraction, fill = VARIANT_TYPE1)) +
+  geom_tile(colour = "white",linewidth = 1,
+            aes(width = 1, height = 1)) +
+  # geom_point(data = variantsData_plotData2[value.y != 0],
+  #            shape = 21,aes(size = value.y),stroke = 1) +
+  facet_grid(.~factor(severity,
+                      #levels = c("microbes_blast_negative","microbes_blast_non-severe","microbes_blast_severe"),
+                      levels = c("Negative","Non-Severe","Severe")),
+             scales = "free",
+             space = "free") +
+  theme_bw() +
+  # scale_x_discrete(labels = c("Missense.tet(C)" = "tet(C)",
+  #                             "Synonymous.tet(C)" = "tet(C)",
+  #                             "Frameshift.TEM-243" = "TEM-243",
+  #                             "Nonsense.TEM-1" = "TEM-1",
+  #                             "Frameshift.TEM-1" = "TEM-1",
+  #                             "Missense.TEM-1" = "TEM-1",
+  #                             "Synonymous.TEM-1" = "TEM-1",
+  #                             "Missense.Rv1877" = "Rv1877")) +
+  scale_fill_manual(values = c("missense" = "lightslateblue",
+                               "nonsense" = "skyblue3",
+                               "frameshift" = "skyblue1",
+                               "synonymous" = "cyan",
+                               "NA" = "grey95")) +
+  coord_fixed(ratio = 3/1.2) +
+  #scale_size_continuous(range = c(2,20)) +
+  #coord_fixed(ratio = 1) +
+  #coord_flip() +
+  #coord_equal() +
+  labs(y = "Abundant Microbes",x = "ARG",fill = NULL) +
+  # theme(legend.position = "bottom",
+  #       legend.text = element_text(size = 18),
+  #       #axis.line = element_line(colour = "black"),
+  #       axis.text.x = element_text(angle = 90,size = 10,hjust = 1,vjust = 0.5,colour = "black"))
+  theme(legend.position = "bottom",
+        legend.text = element_text(size = 18),
+        #axis.line = element_line(colour = "black"),
+        axis.text.x = element_text(angle = 90,size = 12,hjust = 1,vjust = 0.5,colour = "black"),
+        axis.text.y = element_text(size = 19,colour = "black"),
+        axis.title = element_text(size = 22),
+        strip.text = element_text(size = 18),
+        strip.background = element_rect(fill = "white",colour = "black"),
+        
+        panel.spacing = unit(0.2, "lines")) +
+  guides(fill = guide_legend(nrow = 2))
+
+ggsave("Desktop/IGIB/argVariantPlot_finalMarch_final.svg",
+       width = 10,
+       height = 8)
+
+variantsData_plotData2 %>%
+  ggplot(aes(x = value.y,
+             y = Severity, fill = GENE)) +
+  geom_bar(stat = "identity") +
+  facet_grid(value~.,scales = "free") +
+  # scale_fill_manual(values = c("Severe" = "#3771c8",
+  #                              "Non-Severe" = "#ff5599",
+  #                              "Negative" = "#aade87ff")) +
+  theme_bw() +
+  #labs(y = "Abundant Microbes",x = "ARG",fill = NULL) +
+  theme(legend.position = "bottom",
+        legend.text = element_text(size = 18),
+        #axis.line = element_line(colour = "black"),
+        axis.text.x = element_text(angle = 90,size = 17,hjust = 1,vjust = 0.5,colour = "black"),
+        axis.text.y = element_text(size = 19,colour = "black"),
+        axis.title = element_text(size = 22),
+        strip.text = element_text(size = 18),
+        strip.background = element_rect(fill = "white",colour = "black"),
+        
+        panel.spacing = unit(0.2, "lines")) +
+  guides(fill = guide_legend(nrow = 2))
+
+
+
+mutation2 <- dcast.data.table(mutation1,Sample + severity + GENE + VARIANT_TYPE + PROTEIN_CHANGE ~ Category, 
+                              fun.aggregate = function(x) paste(x, collapse = ", "),value.var = c("value"))[mutation != ""]
+mutation2 <- dcast.data.table(mutation1,Sample + severity + GENE + VARIANT_TYPE + PROTEIN_CHANGE ~ Category, 
+                              fun.aggregate = function(x) paste(x, collapse = ", "),value.var = c("value"))[mutation != ""]
+mutation2 <- mutation2[,microbes1 := paste0(unique(trimws(strsplit(microbe,","))),collapse = ",")]
+mutation2 <- mutation2[, microbes1 :=
+                         sapply(strsplit(microbe, ","), function(x)
+                           paste0(unique(trimws(x)), collapse = ",")
+                         )
+]
+mutation2 <- mutation2[,-6]
+mutation2 <- mutation2[, .(microbes = unlist(strsplit(microbes1, ","))), 
+                       by = setdiff(names(mutation2), "microbes1")]
+
+abundantMicrobes <- c("Escherichia coli","E.coli plasmid",
+                      "Klebsiella pneumoniae",
+                      "Mycobacterium tuberculosis",
+                      "Pseudomonas aeruginosa",
+                      "Salmonella enterica",
+                      "Staphylococcus haemolyticus",
+                      "Vibrio parahaemolyticus")
+mutation3 <- mutation2[, .(microbes = unlist(strsplit(microbes1, ","))), 
+                       by = setdiff(names(mutation2), "microbes1")]
+
+mutation3 <- mutation3[microbes %in% abundantMicrobes,]
+
+fwrite(mutation3,
+       "Desktop/IGIB/abundantMicrobes_mutations.tsv",
+       sep = "\t",quote = FALSE, row.names = FALSE)
+
+fwrite(mutation2,
+       "Desktop/IGIB/allMicrobes_mutations.tsv",
+       sep = "\t",quote = FALSE, row.names = FALSE)
+
+
+unique(mutation2[severity == "Negative" & GENE == "TEM-1" & VARIANT_TYPE == "nonsense" & grepl("*coli*",microbe),PROTEIN_CHANGE])
+
+############# BASED ON DNA CHANGE
+mutation2 <- dcast.data.table(mutation1,Sample + severity + GENE + VARIANT_TYPE + PROTEIN_CHANGE ~ Category, 
+                              fun.aggregate = function(x) paste(x, collapse = ", "),value.var = c("value"))[mutation != ""]
+mutation2 <- dcast.data.table(mutation1,Sample + severity + GENE + VARIANT_TYPE + PROTEIN_CHANGE ~ Category, 
+                              fun.aggregate = function(x) paste(x, collapse = ", "),value.var = c("value"))[mutation != ""]
+
+unique(mutation2[severity == "Non-Severe" & GENE == "tet(C)" & VARIANT_TYPE == "missense" & grepl("*coli*",microbe),PROTEIN_CHANGE])
